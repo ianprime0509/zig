@@ -809,9 +809,12 @@ fn ascii_lower(bytes: []u8) void {
     for (bytes) |*b| b.* = std.ascii.toLower(b.*);
 }
 
+export fn module_count() u32 {
+    return Walk.modules.count();
+}
+
 export fn module_name(index: u32) String {
-    const names = Walk.modules.keys();
-    return String.init(if (index >= names.len) "" else names[index]);
+    return String.init(Walk.modules.keys()[index]);
 }
 
 export fn find_module_root(pkg: Walk.ModuleIndex) Decl.Index {
