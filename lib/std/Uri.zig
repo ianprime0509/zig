@@ -541,34 +541,34 @@ fn isSubLimit(c: u8) bool {
 }
 
 /// unreserved  = ALPHA / DIGIT / "-" / "." / "_" / "~"
-fn isUnreserved(c: u8) bool {
+pub fn isUnreserved(c: u8) bool {
     return switch (c) {
         'A'...'Z', 'a'...'z', '0'...'9', '-', '.', '_', '~' => true,
         else => false,
     };
 }
 
-fn isUserChar(c: u8) bool {
+pub fn isUserChar(c: u8) bool {
     return isUnreserved(c) or isSubLimit(c);
 }
 
-fn isPasswordChar(c: u8) bool {
+pub fn isPasswordChar(c: u8) bool {
     return isUserChar(c) or c == ':';
 }
 
-fn isHostChar(c: u8) bool {
+pub fn isHostChar(c: u8) bool {
     return isPasswordChar(c) or c == '[' or c == ']';
 }
 
-fn isPathChar(c: u8) bool {
+pub fn isPathChar(c: u8) bool {
     return isUserChar(c) or c == '/' or c == ':' or c == '@';
 }
 
-fn isQueryChar(c: u8) bool {
+pub fn isQueryChar(c: u8) bool {
     return isPathChar(c) or c == '?';
 }
 
-const isFragmentChar = isQueryChar;
+pub const isFragmentChar = isQueryChar;
 
 fn isAuthoritySeparator(c: u8) bool {
     return switch (c) {

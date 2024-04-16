@@ -137,56 +137,79 @@ pub fn lookup(decl: *const Decl, name: []const u8) ?Decl.Index {
     return file.node_decls.get(resolved_node);
 }
 
-/// Appends the fully qualified name to `out`.
-pub fn fqn(decl: *const Decl, out: *std.ArrayListUnmanaged(u8)) Oom!void {
-    try decl.append_path(out);
+/// Appends the fully qualified name to `out`, using `sep` as the component
+/// delimiter.
+pub fn fqn(decl: *const Decl, out: *std.ArrayListUnmanaged(u8), sep: u8, encode: bool) Oom!void {
+    try decl.append_path(out, sep, encode);
     if (decl.parent != .none) {
-        try append_parent_ns(out, decl.parent);
-        try out.appendSlice(gpa, decl.extra_info().name);
+        try append_parent_ns(out, decl.parent, sep, encode);
+        try append_maybe_encoded(out, decl.extra_info().name, encode);
     } else {
-        out.items.len -= 1; // remove the trailing '.'
+        out.items.len -= 1; // remove the trailing separator
     }
 }
 
-pub fn reset_with_path(decl: *const Decl, list: *std.ArrayListUnmanaged(u8)) Oom!void {
+pub fn reset_with_path(decl: *const Decl, list: *std.ArrayListUnmanaged(u8), sep: u8, encode: bool) Oom!void {
     list.clearRetainingCapacity();
-    try append_path(decl, list);
+    try append_path(decl, list, sep, encode);
 }
 
-pub fn append_path(decl: *const Decl, list: *std.ArrayListUnmanaged(u8)) Oom!void {
-    const start = list.items.len;
+pub fn append_path(decl: *const Decl, list: *std.ArrayListUnmanaged(u8), sep: u8, encode: bool) Oom!void {
     // Prefer the module name alias.
     for (Walk.modules.keys(), Walk.modules.values()) |pkg_name, pkg_file| {
         if (pkg_file == decl.file) {
-            try list.ensureUnusedCapacity(gpa, pkg_name.len + 1);
-            list.appendSliceAssumeCapacity(pkg_name);
-            list.appendAssumeCapacity('.');
+            try append_maybe_encoded(list, pkg_name, encode);
+            try list.append(gpa, sep);
             return;
         }
     }
 
     const file_path = decl.file.path();
-    try list.ensureUnusedCapacity(gpa, file_path.len + 1);
-    list.appendSliceAssumeCapacity(file_path);
-    for (list.items[start..]) |*byte| switch (byte.*) {
-        '/' => byte.* = '.',
-        else => continue,
-    };
-    if (std.mem.endsWith(u8, list.items, ".zig")) {
-        list.items.len -= 3;
-    } else {
-        list.appendAssumeCapacity('.');
+    var file_path_components = std.mem.splitScalar(u8, file_path, '/');
+    try append_maybe_encoded(list, file_path_components.first(), encode);
+    while (file_path_components.next()) |component| {
+        try list.append(gpa, sep);
+        try append_maybe_encoded(list, component, encode);
     }
+    if (encode and std.mem.endsWith(u8, list.items, "%2Ezig")) {
+        list.items.len -= "%2Ezig".len;
+    } else if (!encode and std.mem.endsWith(u8, list.items, ".zig")) {
+        list.items.len -= ".zig".len;
+    }
+    try list.append(gpa, sep);
 }
 
-pub fn append_parent_ns(list: *std.ArrayListUnmanaged(u8), parent: Decl.Index) Oom!void {
+pub fn append_parent_ns(list: *std.ArrayListUnmanaged(u8), parent: Decl.Index, sep: u8, encode: bool) Oom!void {
     assert(parent != .none);
     const decl = parent.get();
     if (decl.parent != .none) {
-        try append_parent_ns(list, decl.parent);
-        try list.appendSlice(gpa, decl.extra_info().name);
-        try list.append(gpa, '.');
+        try append_parent_ns(list, decl.parent, sep, encode);
+        try append_maybe_encoded(list, decl.extra_info().name, encode);
+        try list.append(gpa, sep);
     }
+}
+
+fn append_maybe_encoded(list: *std.ArrayListUnmanaged(u8), s: []const u8, encode: bool) Oom!void {
+    if (encode) {
+        try append_encoded(list, s);
+    } else {
+        try list.appendSlice(gpa, s);
+    }
+}
+
+pub fn append_encoded(list: *std.ArrayListUnmanaged(u8), s: []const u8) Oom!void {
+    try std.Uri.Component.percentEncode(list.writer(gpa), s, struct {
+        fn is_valid(c: u8) bool {
+            // Certain characters are used by Autodoc for special purposes and
+            // must be encoded to avoid ambiguity.
+            return switch (c) {
+                '.', // path delimiter
+                '?', // search query delimiter
+                => false,
+                else => std.Uri.isFragmentChar(c),
+            };
+        }
+    }.is_valid);
 }
 
 pub fn findFirstDocComment(ast: *const Ast, token: Ast.TokenIndex) Ast.TokenIndex {
@@ -202,8 +225,8 @@ pub fn findFirstDocComment(ast: *const Ast, token: Ast.TokenIndex) Ast.TokenInde
 }
 
 /// Successively looks up each component.
-pub fn find(search_string: []const u8) Decl.Index {
-    var path_components = std.mem.splitScalar(u8, search_string, '.');
+pub fn find(search_string: []const u8, delim: u8) Decl.Index {
+    var path_components = std.mem.splitScalar(u8, search_string, delim);
     const file = Walk.modules.get(path_components.first()) orelse return .none;
     var current_decl_index = file.findRootDecl();
     while (path_components.next()) |component| {

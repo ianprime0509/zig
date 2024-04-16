@@ -1,6 +1,3 @@
-/// Delete this to find out where URL escaping needs to be added.
-const missing_feature_url_escape = true;
-
 const gpa = std.heap.wasm_allocator;
 
 const std = @import("std");
@@ -107,9 +104,9 @@ fn query_exec_fallible(query: []const u8, ignore_case: bool) !void {
         const info = decl.extra_info();
         if (!info.is_pub) continue;
 
-        try decl.reset_with_path(&g.full_path_search_text);
+        try decl.reset_with_path(&g.full_path_search_text, '.', false);
         if (decl.parent != .none)
-            try Decl.append_parent_ns(&g.full_path_search_text, decl.parent);
+            try Decl.append_parent_ns(&g.full_path_search_text, decl.parent, '.', false);
         try g.full_path_search_text.appendSlice(gpa, info.name);
 
         try g.full_path_search_text_lower.resize(gpa, g.full_path_search_text.items.len);
@@ -237,8 +234,7 @@ const ErrorIdentifier = packed struct(u64) {
         try out.appendSlice(gpa, name);
         if (has_link) {
             try out.appendSlice(gpa, " <a href=\"#");
-            _ = missing_feature_url_escape;
-            try decl_index.get().fqn(out);
+            try decl_index.get().fqn(out, '.', true);
             try out.appendSlice(gpa, "\">");
             try out.appendSlice(gpa, decl_index.get().extra_info().name);
             try out.appendSlice(gpa, "</a>");
@@ -546,10 +542,10 @@ export fn decl_doctest_html(decl_index: Decl.Index) String {
     return String.init(string_result.items);
 }
 
-export fn decl_fqn(decl_index: Decl.Index) String {
+export fn decl_fqn(decl_index: Decl.Index, encode: bool) String {
     const decl = decl_index.get();
     string_result.clearRetainingCapacity();
-    decl.fqn(&string_result) catch @panic("OOM");
+    decl.fqn(&string_result, '.', encode) catch @panic("OOM");
     return String.init(string_result.items);
 }
 
@@ -696,12 +692,12 @@ fn render_docs(
                     .code_span => {
                         try writer.writeAll("<code>");
                         const content = doc.string(data.text.content);
-                        if (resolve_decl_path(r.context, content)) |resolved_decl_index| {
+                        const linked_decl = Decl.find(content, '.');
+                        if (linked_decl != .none) {
                             g.link_buffer.clearRetainingCapacity();
-                            try resolve_decl_link(resolved_decl_index, &g.link_buffer);
+                            try resolve_decl_link(linked_decl, &g.link_buffer);
 
                             try writer.writeAll("<a href=\"#");
-                            _ = missing_feature_url_escape;
                             try writer.writeAll(g.link_buffer.items);
                             try writer.print("\">{}</a>", .{markdown.fmtHtml(content)});
                         } else {
@@ -717,19 +713,6 @@ fn render_docs(
         }.render,
     };
     try renderer.render(parsed_doc, out.writer(gpa));
-}
-
-fn resolve_decl_path(decl_index: Decl.Index, path: []const u8) ?Decl.Index {
-    var path_components = std.mem.splitScalar(u8, path, '.');
-    var current_decl_index = decl_index.get().lookup(path_components.first()) orelse return null;
-    while (path_components.next()) |component| {
-        switch (current_decl_index.get().categorize()) {
-            .alias => |aliasee| current_decl_index = aliasee,
-            else => {},
-        }
-        current_decl_index = current_decl_index.get().get_child(component) orelse return null;
-    }
-    return current_decl_index;
 }
 
 export fn decl_type_html(decl_index: Decl.Index) String {
@@ -836,11 +819,31 @@ export fn find_file_root() Decl.Index {
     return file.findRootDecl();
 }
 
-/// Uses `input_string`.
+/// Uses `input_string`, which is expected to be percent-encoded.
 /// Tries to look up the Decl component-wise but then falls back to a file path
 /// based scan.
 export fn find_decl() Decl.Index {
-    const result = Decl.find(input_string.items);
+    // input_string is percent-encoded and must be decoded before using
+    // Decl.find. To avoid misinterpreting encoded '.'s as path separators, the
+    // decoding process opts to use null bytes to separate path components.
+    // The decoding process is done in place: since the percent-decoded form of
+    // a string cannot be longer than the encoded form, each component can be
+    // decoded separately (using input_index) and copied back to the current
+    // output_index.
+    var output_index: usize = 0;
+    var input_index: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, input_string.items, input_index, '.')) |sep_pos| {
+        const decoded = std.Uri.percentDecodeInPlace(input_string.items[input_index..sep_pos]);
+        std.mem.copyForwards(u8, input_string.items[output_index..], decoded);
+        input_string.items[output_index + decoded.len] = 0;
+        output_index += decoded.len + 1;
+        input_index = sep_pos + 1;
+    }
+    const last_decoded = std.Uri.percentDecodeInPlace(input_string.items[input_index..]);
+    std.mem.copyForwards(u8, input_string.items[output_index..], last_decoded);
+    input_string.items.len = output_index + last_decoded.len;
+
+    const result = Decl.find(input_string.items, 0);
     if (result != .none) return result;
 
     const g = struct {
@@ -848,7 +851,7 @@ export fn find_decl() Decl.Index {
     };
     for (Walk.decls.items, 0..) |*decl, decl_index| {
         g.match_fqn.clearRetainingCapacity();
-        decl.fqn(&g.match_fqn) catch @panic("OOM");
+        decl.fqn(&g.match_fqn, 0, false) catch @panic("OOM");
         if (std.mem.eql(u8, g.match_fqn.items, input_string.items)) {
             //const path = @as(Decl.Index, @enumFromInt(decl_index)).get().file.path();
             //log.debug("find_decl '{s}' found in {s}", .{ input_string.items, path });
@@ -1061,8 +1064,7 @@ fn file_source_html(
                     const fn_token = main_tokens[fn_link.ast_node];
                     if (token_index == fn_token + 1) {
                         try out.appendSlice(gpa, "<a class=\"tok-fn\" href=\"#");
-                        _ = missing_feature_url_escape;
-                        try fn_link.fqn(out);
+                        try fn_link.fqn(out, '.', true);
                         try out.appendSlice(gpa, "\">");
                         try appendEscaped(out, slice);
                         try out.appendSlice(gpa, "</a>");
@@ -1096,7 +1098,6 @@ fn file_source_html(
                     try walk_field_accesses(file_index, &g.field_access_buffer, field_access_node);
                     if (g.field_access_buffer.items.len > 0) {
                         try out.appendSlice(gpa, "<a href=\"#");
-                        _ = missing_feature_url_escape;
                         try out.appendSlice(gpa, g.field_access_buffer.items);
                         try out.appendSlice(gpa, "\">");
                         try appendEscaped(out, slice);
@@ -1112,7 +1113,6 @@ fn file_source_html(
                     try resolve_ident_link(file_index, &g.field_access_buffer, token_index);
                     if (g.field_access_buffer.items.len > 0) {
                         try out.appendSlice(gpa, "<a href=\"#");
-                        _ = missing_feature_url_escape;
                         try out.appendSlice(gpa, g.field_access_buffer.items);
                         try out.appendSlice(gpa, "\">");
                         try appendEscaped(out, slice);
@@ -1238,8 +1238,8 @@ fn resolve_ident_link(
 fn resolve_decl_link(decl_index: Decl.Index, out: *std.ArrayListUnmanaged(u8)) Oom!void {
     const decl = decl_index.get();
     switch (decl.categorize()) {
-        .alias => |alias_decl| try alias_decl.get().fqn(out),
-        else => try decl.fqn(out),
+        .alias => |alias_decl| try alias_decl.get().fqn(out, '.', true),
+        else => try decl.fqn(out, '.', true),
     }
 }
 
@@ -1268,7 +1268,7 @@ fn walk_field_accesses(
     }
     if (out.items.len > 0) {
         try out.append(gpa, '.');
-        try out.appendSlice(gpa, ast.tokenSlice(field_ident));
+        try Decl.append_encoded(out, ast.tokenSlice(field_ident));
     }
 }
 
