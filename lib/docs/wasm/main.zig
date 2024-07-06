@@ -524,11 +524,13 @@ export fn decl_fn_proto_html(decl_index: Decl.Index, linkify_fn_name: bool) Stri
     return String.init(string_result.items);
 }
 
-export fn decl_source_html(decl_index: Decl.Index) String {
+export fn decl_source_html(decl_index: Decl.Index, scroll_decl_index: Decl.Index) String {
     const decl = decl_index.get();
 
     string_result.clearRetainingCapacity();
-    file_source_html(decl.file, &string_result, decl.ast_node, .{}) catch |err| {
+    file_source_html(decl.file, &string_result, decl.ast_node, .{
+        .scroll_anchor = scroll_decl_index,
+    }) catch |err| {
         fatal("unable to render source: {s}", .{@errorName(err)});
     };
     return String.init(string_result.items);
@@ -914,6 +916,7 @@ const RenderSourceOptions = struct {
     skip_comments: bool = false,
     collapse_whitespace: bool = false,
     fn_link: Decl.Index = .none,
+    scroll_anchor: Decl.Index = .none,
 };
 
 fn file_source_html(
@@ -935,6 +938,17 @@ fn file_source_html(
 
     const start_token = ast.firstToken(root_node);
     const end_token = ast.lastToken(root_node) + 1;
+
+    const scroll_anchor_token = if (options.scroll_anchor != .none) token: {
+        const scroll_anchor = options.scroll_anchor.get();
+        // If the user navigates to another source page by changing the URL
+        // hash, the scroll decl will not be associated with the new file, so
+        // attempting to locate it in the new file's AST would be incorrect.
+        break :token if (scroll_anchor.file == file_index)
+            ast.firstToken(scroll_anchor.ast_node)
+        else
+            std.math.maxInt(Ast.TokenIndex);
+    } else std.math.maxInt(Ast.TokenIndex);
 
     var cursor: usize = token_starts[start_token];
 
@@ -970,6 +984,9 @@ fn file_source_html(
             }
         }
         if (tag == .eof) break;
+        if (token_index == scroll_anchor_token) {
+            try out.appendSlice(gpa, "<a id=\"scroll-anchor\"></a>");
+        }
         const slice = ast.tokenSlice(token_index);
         cursor = start + slice.len;
         switch (tag) {
