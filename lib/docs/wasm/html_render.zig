@@ -15,7 +15,9 @@ pub const RenderSourceOptions = struct {
     skip_doc_comments: bool = false,
     skip_comments: bool = false,
     collapse_whitespace: bool = false,
-    fn_link: Decl.Index = .none,
+    fn_decl: Decl.Index = .none,
+    fn_name_decl: Decl.Index = .none,
+    linkify_fn_name: bool = false,
     /// Assumed to be sorted ascending.
     source_location_annotations: []const Annotation = &.{},
     /// Concatenated with dom_id.
@@ -182,16 +184,24 @@ pub fn fileSourceHtml(
             },
 
             .identifier => i: {
-                if (options.fn_link != .none) {
-                    const fn_link = options.fn_link.get();
-                    const fn_token = main_tokens[fn_link.ast_node];
+                if (options.fn_decl != .none) {
+                    const fn_decl = options.fn_decl.get();
+                    const fn_name_decl = if (options.fn_name_decl != .none)
+                        options.fn_name_decl.get()
+                    else
+                        fn_decl;
+                    const fn_token = main_tokens[fn_decl.ast_node];
                     if (token_index == fn_token + 1) {
-                        try out.appendSlice(gpa, "<a class=\"tok-fn\" href=\"#");
-                        _ = missing_feature_url_escape;
-                        try fn_link.fqn(out);
-                        try out.appendSlice(gpa, "\">");
-                        try appendEscaped(out, slice);
-                        try out.appendSlice(gpa, "</a>");
+                        if (options.linkify_fn_name) {
+                            try out.appendSlice(gpa, "<a class=\"tok-fn\" href=\"#");
+                            _ = missing_feature_url_escape;
+                            try fn_name_decl.fqn(out);
+                            try out.appendSlice(gpa, "\">");
+                        }
+                        try appendEscaped(out, fn_name_decl.extra_info().name);
+                        if (options.linkify_fn_name) {
+                            try out.appendSlice(gpa, "</a>");
+                        }
                         break :i;
                     }
                 }
@@ -404,9 +414,5 @@ fn unindent(s: []const u8, indent: usize) []const u8 {
 }
 
 pub fn resolveDeclLink(decl_index: Decl.Index, out: *std.ArrayListUnmanaged(u8)) Oom!void {
-    const decl = decl_index.get();
-    switch (decl.categorize()) {
-        .alias => |alias_decl| try alias_decl.get().fqn(out),
-        else => try decl.fqn(out),
-    }
+    try decl_index.get().fqn(out);
 }
