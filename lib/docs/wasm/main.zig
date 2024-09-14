@@ -490,7 +490,7 @@ fn decl_param_html_fallible(
     }
 }
 
-export fn decl_fn_proto_html(decl_index: Decl.Index, linkify_fn_name: bool) String {
+export fn decl_fn_proto_html(decl_index: Decl.Index, base_decl_index: Decl.Index, linkify_fn_name: bool) String {
     const decl = decl_index.get();
     const ast = decl.file.get_ast();
     const node_tags = ast.nodes.items(.tag);
@@ -512,7 +512,9 @@ export fn decl_fn_proto_html(decl_index: Decl.Index, linkify_fn_name: bool) Stri
         .skip_doc_comments = true,
         .skip_comments = true,
         .collapse_whitespace = true,
-        .fn_link = if (linkify_fn_name) decl_index else .none,
+        .fn_decl = decl_index,
+        .fn_name_decl = base_decl_index,
+        .linkify_fn_name = linkify_fn_name,
     }) catch |err| {
         fatal("unable to render source: {s}", .{@errorName(err)});
     };
@@ -718,10 +720,6 @@ fn resolve_decl_path(decl_index: Decl.Index, path: []const u8) ?Decl.Index {
     var path_components = std.mem.splitScalar(u8, path, '.');
     var current_decl_index = decl_index.get().lookup(path_components.first()) orelse return null;
     while (path_components.next()) |component| {
-        switch (current_decl_index.get().categorize()) {
-            .alias => |aliasee| current_decl_index = aliasee,
-            else => {},
-        }
         current_decl_index = current_decl_index.get().get_child(component) orelse return null;
     }
     return current_decl_index;
