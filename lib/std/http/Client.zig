@@ -1306,7 +1306,7 @@ pub const basic_authorization = struct {
     }
 };
 
-pub const ConnectTcpError = Allocator.Error || error{ ConnectionRefused, NetworkUnreachable, ConnectionTimedOut, ConnectionResetByPeer, TemporaryNameServerFailure, NameServerFailure, UnknownHostName, HostLacksNetworkAddresses, UnexpectedConnectFailure, TlsInitializationFailed };
+pub const ConnectTcpError = Allocator.Error || error{ ConnectionRefused, NetworkUnreachable, ConnectionTimedOut, ConnectionResetByPeer, TemporaryNameServerFailure, NameServerFailure, UnknownHostName, HostLacksNetworkAddresses, UnexpectedConnectFailure, TlsInitializationFailed, CertificateBundleLoadFailure };
 
 /// Connect to `host:port` using the specified protocol. This will reuse a connection if one is already open.
 ///
@@ -1353,6 +1353,17 @@ pub fn connectTcp(client: *Client, host: []const u8, port: u16, protocol: Connec
 
         conn.data.tls_client = try client.allocator.create(std.crypto.tls.Client);
         errdefer client.allocator.destroy(conn.data.tls_client);
+
+        if (@atomicLoad(bool, &client.next_https_rescan_certs, .acquire)) {
+            client.ca_bundle_mutex.lock();
+            defer client.ca_bundle_mutex.unlock();
+
+            if (client.next_https_rescan_certs) {
+                client.ca_bundle.rescan(client.allocator) catch
+                    return error.CertificateBundleLoadFailure;
+                @atomicStore(bool, &client.next_https_rescan_certs, false, .release);
+            }
+        }
 
         conn.data.tls_client.* = std.crypto.tls.Client.init(stream, client.ca_bundle, host) catch return error.TlsInitializationFailed;
         // This is appropriate for HTTPS because the HTTP headers contain
@@ -1522,7 +1533,6 @@ pub const RequestError = ConnectTcpError || ConnectErrorPartial || Request.SendE
     UnsupportedUriScheme,
     UriMissingHost,
 
-    CertificateBundleLoadFailure,
     UnsupportedTransferEncoding,
 };
 
@@ -1622,19 +1632,6 @@ pub fn open(
 
     var server_header = std.heap.FixedBufferAllocator.init(options.server_header_buffer);
     const protocol, const valid_uri = try validateUri(uri, server_header.allocator());
-
-    if (protocol == .tls and @atomicLoad(bool, &client.next_https_rescan_certs, .acquire)) {
-        if (disable_tls) unreachable;
-
-        client.ca_bundle_mutex.lock();
-        defer client.ca_bundle_mutex.unlock();
-
-        if (client.next_https_rescan_certs) {
-            client.ca_bundle.rescan(client.allocator) catch
-                return error.CertificateBundleLoadFailure;
-            @atomicStore(bool, &client.next_https_rescan_certs, false, .release);
-        }
-    }
 
     const conn = options.connection orelse
         try client.connect(valid_uri.host.?.raw, uriPort(valid_uri, protocol), protocol);
