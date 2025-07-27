@@ -1806,3 +1806,7 @@ pub fn Hashed(comptime Hasher: type) type {
         }
     };
 }
+
+test {
+    _ = Limited;
+}
