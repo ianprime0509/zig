@@ -1860,3 +1860,7 @@ pub fn writableVectorWsa(
     }
     return .{ i, n };
 }
+
+test {
+    _ = Limited;
+}
