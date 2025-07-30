@@ -439,8 +439,8 @@ pub fn bufferedLen(r: *const Reader) usize {
     return r.end - r.seek;
 }
 
-pub fn hashed(r: *Reader, hasher: anytype) Hashed(@TypeOf(hasher)) {
-    return .{ .in = r, .hasher = hasher };
+pub fn hashed(r: *Reader, hasher: anytype, buffer: []u8) Hashed(@TypeOf(hasher)) {
+    return .init(r, hasher, buffer);
 }
 
 pub fn readVecAll(r: *Reader, data: [][]u8) Error!void {
@@ -1775,7 +1775,7 @@ pub fn Hashed(comptime Hasher: type) type {
                 .hasher = hasher,
                 .interface = .{
                     .vtable = &.{
-                        .read = @This().read,
+                        .stream = @This().stream,
                         .discard = @This().discard,
                     },
                     .buffer = buffer,
@@ -1785,26 +1785,23 @@ pub fn Hashed(comptime Hasher: type) type {
             };
         }
 
-        fn read(r: *Reader, w: *Writer, limit: Limit) StreamError!usize {
+        fn stream(r: *Reader, w: *Writer, limit: Limit) StreamError!usize {
             const this: *@This() = @alignCast(@fieldParentPtr("interface", r));
-            const data = w.writableVector(limit);
-            const n = try this.in.readVec(data);
-            const result = w.advanceVector(n);
-            var remaining: usize = n;
-            for (data) |slice| {
-                if (remaining < slice.len) {
-                    this.hasher.update(slice[0..remaining]);
-                    return result;
-                } else {
-                    remaining -= slice.len;
-                    this.hasher.update(slice);
-                }
+            var result: usize = 0;
+            var remaining = limit;
+            while (remaining.nonzero()) {
+                const dest = remaining.slice(try w.writableSliceGreedy(1));
+                const n = try this.in.readSliceShort(dest);
+                this.hasher.update(dest[0..n]);
+                result += n;
+                w.advance(n);
+                remaining = remaining.subtract(n).?;
             }
-            assert(remaining == 0);
             return result;
         }
 
         fn discard(r: *Reader, limit: Limit) Error!usize {
+            if (true) @panic("TODO");
             const this: *@This() = @alignCast(@fieldParentPtr("interface", r));
             var w = this.hasher.writer(&.{});
             const n = this.in.stream(&w, limit) catch |err| switch (err) {
