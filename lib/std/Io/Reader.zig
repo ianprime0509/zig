@@ -410,7 +410,10 @@ pub fn readVec(r: *Reader, data: [][]u8) Error!usize {
         r.seek = seek;
         data[i] = buf[copy_len..];
         defer data[i] = buf;
-        return n + try r.vtable.readVec(r, data[i..]);
+        return n + (r.vtable.readVec(r, data[i..]) catch |err| switch (err) {
+            error.EndOfStream => if (copy_len == 0) return error.EndOfStream else 0,
+            error.ReadFailed => return error.ReadFailed,
+        });
     }
     const n = seek - r.seek;
     r.seek = seek;
